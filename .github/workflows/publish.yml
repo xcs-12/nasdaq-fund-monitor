@@ -1,0 +1,37 @@
+name: Publish dashboard
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+concurrency:
+  group: nasdaq-monitor
+  cancel-in-progress: false
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci --omit=optional --ignore-scripts
+      - name: Restore latest monitor data when available
+        run: |
+          node scripts/watch/state-branch.js restore
+          if [ -f runtime/watch-state.json ]; then
+            node scripts/watch/run.js export
+          fi
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: web
+      - name: Deploy dashboard
+        id: deploy
+        uses: actions/deploy-pages@v4
