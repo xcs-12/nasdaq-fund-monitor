@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="纳斯达克100场外基金限购看板，查看各基金公司申购额度与最近变化。">
+  <title>纳指额度观察 · 场外基金限购看板</title>
+  <link rel="stylesheet" href="styles.css"><script defer src="app.js"></script>
+</head>
+<body>
+  <header class="masthead"><div class="shell">
+    <a class="brand" href="./"><span class="brand-icon" aria-hidden="true">N<span>↗</span></span><span>纳指额度观察<small>NASDAQ FUND WATCH</small></span></a>
+    <span class="header-note"><i></i>公开数据 · 定时观察</span>
+  </div></header>
+  <main class="shell">
+    <section class="intro"><div><div class="eyebrow">纳斯达克 · 人民币场外基金</div><h1>每一笔额度变化，<br class="mobile-break">都值得看见<span>。</span></h1><p>集中查看各家基金的申购限额，跟踪额度调整与开放状态。</p></div><div class="schedule"><span>每日检查 · 北京时间</span><strong>09:10 <b>/</b> 14:30 <b>/</b> 20:30</strong><small>变化邮件通知 · 定时任务可能延迟</small></div></section>
+    <div id="health" class="health" role="status" aria-live="polite">正在读取监控数据…</div>
+    <section class="stats" aria-label="数据概览">
+      <article><span>监控基金份额</span><strong id="stat-funds">—</strong><small>按基金代码统计</small></article>
+      <article><span>限额申购</span><strong id="stat-limited">—</strong><small>代销渠道核验结果</small></article>
+      <article><span>暂停或暂不可申购</span><strong id="stat-suspended">—</strong><small>含渠道暂不开放</small></article>
+      <article class="accent"><span>最近一次有效检查的变化</span><strong id="stat-changes">—</strong><small id="stat-time">等待首次检查</small></article>
+    </section>
+    <section class="changes panel"><div class="section-heading"><div><span class="eyebrow">LATEST CHANGES</span><h2>最近变化 <span class="live-dot"></span></h2></div><span class="muted">限额与状态变化会合并发送邮件</span></div><div id="changes" aria-live="polite"><p class="empty">正在读取变化记录…</p></div></section>
+    <section class="funds panel"><div class="section-heading"><div><span class="eyebrow">FUND DIRECTORY</span><h2>基金限购一览</h2></div><span id="result-count" class="muted"></span></div>
+      <div class="channel-tabs" role="group" aria-label="申购渠道"><button type="button" data-channel="sales-agency" class="selected" aria-pressed="true">代销渠道</button><button type="button" data-channel="fund-manager-direct" aria-pressed="false">基金公司直销公告</button></div>
+      <p id="channel-note" class="channel-note">代销数据来自天天基金公开销售页，并结合适用公告核验；其他平台额度可能不同。</p>
+      <div class="toolbar">
+        <label class="search"><span>⌕</span><input id="search" type="search" placeholder="搜索基金名称或代码" aria-label="搜索基金名称或代码"></label>
+        <label><span class="sr-only">基金公司</span><select id="manager"><option value="">全部公司</option></select></label>
+        <label><span class="sr-only">申购状态</span><select id="status"><option value="">全部状态</option><option value="limited">限额申购</option><option value="open">开放申购</option><option value="suspended">暂停申购</option><option value="unavailable">暂不可申购</option><option value="unknown">暂未确认</option></select></label>
+        <label><span class="sr-only">排序</span><select id="sort"><option value="desc">额度从高到低</option><option value="asc">额度从低到高</option><option value="name">基金名称排序</option></select></label>
+      </div>
+      <div class="table-scroll"><table><thead><tr><th>基金 / 代码</th><th>公司与类别</th><th>申购状态</th><th>每日申购限额</th><th>数据时间 / 来源</th></tr></thead><tbody id="fund-rows"></tbody></table></div>
+      <p class="table-foot">A / C 等份额分别展示。单只基金多份额的额度是否合并计算，请核对对应公告。</p>
+    </section>
+    <section class="history panel"><div class="section-heading"><div><span class="eyebrow">CHECK HISTORY</span><h2>检查历史</h2></div><span class="muted">保留最近 90 次检查</span></div><label class="history-picker">查看一次检查 <select id="history-select"><option value="">选择检查时间</option></select></label><div id="history-detail" class="history-detail"><p class="empty">选择记录，查看当时的额度和变化。</p></div></section>
+    <footer><div class="footer-brand">N↗ <strong>纳指额度观察</strong></div><p>覆盖纳斯达克100场外基金及单独标注的景顺长城纳斯达克科技联接。<br>直销公告额度不代表已验证可申购；信息以相应基金公告及购买渠道实际显示为准。</p><span>基于 <a href="https://github.com/aiten2/qdii-purchase-limits" target="_blank" rel="noopener noreferrer">qdii-purchase-limits</a> · MIT</span></footer>
+  </main>
+</body></html>
