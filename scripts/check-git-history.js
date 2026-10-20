@@ -63,7 +63,7 @@ function scanHistory(root, options) {
   commits.forEach((commit) => {
     const metadata = git(["show", "-s", "--format=%B%n%an%n%ae%n%cn%n%ce", commit], { cwd: root });
     const metadataKindsFound = findSensitiveKinds(metadata, settings)
-      .concat(settings.publicRelease ? metadataKinds(metadata) : []);
+      .concat(settings.publicRelease && !settings.allowPublicAuthorEmail ? metadataKinds(metadata) : []);
     metadataKindsFound.forEach((kind) => {
       const key = `${commit}:commit-metadata:${kind}`;
       if (!seen.has(key)) {
@@ -112,7 +112,7 @@ function main() {
     process.exitCode = 1;
     return;
   }
-  const findings = scanHistory(root, { publicRelease });
+  const findings = scanHistory(root, { publicRelease, allowPublicAuthorEmail: process.argv.includes("--allow-public-author-email") });
   if (findings.length) {
     findings.forEach((item) => console.error(`FAIL: ${item.commit} ${item.file} [${item.kind}]`));
     console.error(`FAIL: 完整提交历史发现 ${findings.length} 个风险位置；未输出匹配内容。`);
