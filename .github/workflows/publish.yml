@@ -28,7 +28,7 @@ jobs:
           if [ -f runtime/watch-state.json ]; then
             node scripts/watch/run.js export
           fi
-      - uses: actions/configure-pages@v5
+      - uses: actions/configure-pages@v6
       - uses: actions/upload-pages-artifact@v3
         with:
           path: web
