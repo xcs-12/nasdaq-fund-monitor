@@ -1,0 +1,316 @@
+const https = require("node:https");
+const { mapLimit } = require("./sources");
+
+const ANNOUNCEMENT_API_URL = "https://api.fund.eastmoney.com/f10/JJGG";
+const ANNOUNCEMENT_PDF_BASE_URL = "https://pdf.dfcfw.com/pdf";
+
+function buildAnnouncementApiUrl(code) {
+  const url = new URL(ANNOUNCEMENT_API_URL);
+  url.searchParams.set("fundcode", String(code || ""));
+  url.searchParams.set("pageIndex", "1");
+  url.searchParams.set("pageSize", "100");
+  url.searchParams.set("type", "5");
+  return url.toString();
+}
+
+function buildAnnouncementPdfUrl(id) {
+  const value = String(id || "");
+  if (!/^AN\d{18}$/.test(value)) throw new Error("公告 ID 无效");
+  return `${ANNOUNCEMENT_PDF_BASE_URL}/H2_${value}_1.pdf`;
+}
+
+function classifyPurchaseTitle(title) {
+  const source = String(title || "").replace(/\s+/g, "");
+  if (/节假日|境外主要(?:市场|交易市场|投资场所).*(?:暂停|休市)/.test(source)) return "holiday-calendar";
+  if (/恢复申购/.test(source) && !/大额申购|限额|限制金额/.test(source)) return "resume";
+  if (/暂停申购/.test(source) && !/暂停大额申购/.test(source)) return "full-suspend";
+  if (/大额申购|暂停大额|恢复大额|限制金额|业务限额|申购.*(?:金额|限制|上限)/.test(source)) return "limit";
+  return "other";
+}
+
+function parseAnnouncementIndex(source, options) {
+  let payload;
+  try {
+    payload = JSON.parse(String(source || ""));
+  } catch {
+    throw new Error("公开公告索引响应无法识别");
+  }
+  if (payload.ErrCode !== 0 || !Array.isArray(payload.Data)) throw new Error("公开公告索引查询失败");
+  const classify = options && options.classifyNoticeTitle || classifyPurchaseTitle;
+  return payload.Data.flatMap((row) => {
+    if (String(row.NEWCATEGORY || "") !== "5") return [];
+    const category = classify(row.TITLE);
+    if (!["limit", "full-suspend", "resume"].includes(category)) return [];
+    try {
+      return [{
+        id: String(row.ID || ""),
+        title: String(row.TITLE || "").trim(),
+        date: String(row.PUBLISHDATEDesc || row.PUBLISHDATE || "").slice(0, 10),
+        url: buildAnnouncementPdfUrl(row.ID),
+        category,
+        source: "公开公告索引"
+      }];
+    } catch {
+      return [];
+    }
+  }).sort((left, right) => String(right.date).localeCompare(String(left.date)) || String(right.id).localeCompare(String(left.id)));
+}
+
+function fetchAnnouncementText(url, options) {
+  const settings = Object.assign({ timeoutMs: 20000 }, options);
+  return new Promise((resolve, reject) => {
+    const request = https.get(url, {
+      timeout: settings.timeoutMs,
+      headers: {
+        Referer: "https://fundf10.eastmoney.com/",
+        "User-Agent": "qdii-purchase-limits (+https://github.com/aiten2/qdii-purchase-limits)"
+      }
+    }, (response) => {
+      let body = "";
+      response.setEncoding("utf8");
+      response.on("data", (chunk) => { body += chunk; });
+      response.on("end", () => {
+        if (response.statusCode >= 200 && response.statusCode < 300) resolve(body);
+        else reject(new Error(`公开公告索引 HTTP ${response.statusCode}`));
+      });
+    });
+    request.on("timeout", () => request.destroy(new Error("公开公告索引请求超时")));
+    request.on("error", reject);
+  });
+}
+
+function productKey(fund) {
+  return `${fund && fund.index || ""}|${String(fund && fund.name || "")
+    .replace(/(?:人民币)?[A-Z](?:类)?(?:人民币|\(人民币\))?$/i, "")
+    .replace(/\s+/g, "")
+    .trim()}`;
+}
+
+function coveredCodes(parsed) {
+  return new Set((parsed && parsed.limits || []).flatMap((rule) => [
+    ...Object.keys(rule.perShareLimits || {}),
+    ...Object.keys(rule.perShareStatuses || {})
+  ]));
+}
+
+function eventCoveredCodes(event) {
+  const codes = coveredCodes(event && event.parsed);
+  if (["full-suspend", "resume"].includes(event && event.category)) {
+    (event.parsed && event.parsed.shareCodes || []).forEach((code) => codes.add(code));
+  }
+  return codes;
+}
+
+function repairAnnouncementDate(parsed, date) {
+  if (!parsed || parsed.announcementDate || !date) return parsed;
+  const warnings = (parsed.parseWarnings || []).filter((warning) => warning !== "未可靠提取公告日期");
+  return Object.assign({}, parsed, {
+    announcementDate: date,
+    parsed: warnings.length === 0 && (parsed.limits || []).length > 0,
+    confidence: warnings.length ? "low" : "high",
+    parseWarnings: warnings
+  });
+}
+
+function createTaskLimiter(limit) {
+  const concurrency = Math.max(1, Number(limit) || 1);
+  let active = 0;
+  const queue = [];
+  const drain = () => {
+    while (active < concurrency && queue.length) {
+      const task = queue.shift();
+      active += 1;
+      Promise.resolve().then(task.run).then(task.resolve, task.reject).finally(() => {
+        active -= 1;
+        drain();
+      });
+    }
+  };
+  return (run) => new Promise((resolve, reject) => {
+    queue.push({ run, resolve, reject });
+    drain();
+  });
+}
+
+async function fetchFundNotices(fund, settings) {
+  const fetcher = settings.fetchText || fetchAnnouncementText;
+  let lastError;
+  for (let attempt = 0; attempt <= settings.indexRetries; attempt += 1) {
+    try {
+      const source = await fetcher(buildAnnouncementApiUrl(fund.code), settings);
+      return parseAnnouncementIndex(source, settings).slice(0, settings.maxNotices);
+    } catch (error) {
+      lastError = error;
+      if (attempt < settings.indexRetries && settings.indexRetryBaseMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, settings.indexRetryBaseMs * (attempt + 1)));
+      }
+    }
+  }
+  throw lastError;
+}
+
+async function collectAnnouncementIndexNoticeEvents(funds, options) {
+  const settings = Object.assign({ maxNotices: 30, concurrency: 2, pdfConcurrency: 2, parserVersion: 1, indexRetries: 2, indexRetryBaseMs: 500 }, options);
+  const pdfEventCache = settings.pdfEventCache && settings.pdfEventCache.schemaVersion === 1 && settings.pdfEventCache.entries
+    ? settings.pdfEventCache
+    : { schemaVersion: 1, entries: {} };
+  const runPdfTask = createTaskLimiter(settings.pdfConcurrency);
+  const eventPromises = new Map();
+  const cachedEventIds = new Set();
+  const sourceFailures = new Set();
+  const parseFailures = new Set();
+  const resolvedBySharedNoticeOrCache = new Set();
+  let downloadedNoticeCount = 0;
+  const resolveNotice = (notice) => {
+    const cacheKey = `${settings.parserVersion}:${notice.id}`;
+    const cached = pdfEventCache.entries[cacheKey];
+    if (cached && cached.noticeId === notice.id && cached.url === notice.url
+      && cached.parserVersion === settings.parserVersion && cached.parsed) {
+      cachedEventIds.add(notice.id);
+      return Promise.resolve(Object.assign({}, notice, { parsed: cached.parsed }));
+    }
+    if (eventPromises.has(cacheKey)) return eventPromises.get(cacheKey);
+    const promise = runPdfTask(async () => {
+      let stage = "download";
+      try {
+        downloadedNoticeCount += 1;
+        const buffer = await settings.fetchBuffer(notice.url, settings);
+        stage = "extract-text";
+        const text = await settings.extractPdfText(buffer);
+        stage = "parse";
+        const parsed = repairAnnouncementDate(settings.parseOfficialNoticeText(text), notice.date);
+        const statusOnlyEvent = ["full-suspend", "resume"].includes(notice.category)
+          && (parsed && parsed.shareCodes || []).length > 0;
+        if (!parsed || (!parsed.parsed && !statusOnlyEvent)) {
+          const error = new Error("公告正文未能可靠解析");
+          error.shareCodes = parsed && parsed.shareCodes || [];
+          throw error;
+        }
+        pdfEventCache.entries[cacheKey] = {
+          noticeId: notice.id,
+          url: notice.url,
+          parsedAt: settings.queriedAt || new Date().toISOString(),
+          parserVersion: settings.parserVersion,
+          parsed
+        };
+        return Object.assign({}, notice, { parsed });
+      } catch (error) {
+        error.stage = stage;
+        throw error;
+      }
+    });
+    eventPromises.set(cacheKey, promise);
+    return promise;
+  };
+  const unique = [...new Map((funds || []).map((fund) => [fund.code, fund])).values()];
+  const groups = new Map();
+  unique.forEach((fund) => {
+    const key = productKey(fund);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(fund);
+  });
+  const byCode = {};
+  const errors = [];
+  const checkedCodes = new Set();
+  await mapLimit([...groups.values()], settings.concurrency, async (groupFunds) => {
+    const noticeMap = new Map();
+    const indexErrors = new Map();
+    for (const fund of groupFunds) {
+      try {
+        const notices = await fetchFundNotices(fund, settings);
+        checkedCodes.add(fund.code);
+        notices.forEach((notice) => {
+          if (!noticeMap.has(notice.id)) noticeMap.set(notice.id, notice);
+        });
+      } catch (error) {
+        indexErrors.set(fund.code, error.message);
+        sourceFailures.add(`index|${fund.code}|${error.message}`);
+      }
+    }
+    try {
+      const notices = [...noticeMap.values()].sort((left, right) => (
+        String(right.date).localeCompare(String(left.date)) || String(right.id).localeCompare(String(left.id))
+      ));
+      const directNotices = notices.filter((notice) => /直销|电子交易平台|网上交易/.test(notice.title));
+      const generalNotices = notices.filter((notice) => !directNotices.includes(notice));
+      const orderedNotices = directNotices.concat(generalNotices);
+      const events = [];
+      const noticeFailures = [];
+      for (const notice of orderedNotices) {
+        try {
+          events.push(await resolveNotice(notice));
+        } catch (error) {
+          const failureKey = `${notice.id}|${error.stage || "download"}|${error.message}`;
+          if (error.stage === "parse") parseFailures.add(failureKey);
+          else sourceFailures.add(failureKey);
+          noticeFailures.push({
+            noticeId: notice.id,
+            noticeDate: notice.date,
+            noticeTitle: notice.title,
+            stage: error.stage || "download",
+            message: error.message,
+            shareCodes: error.shareCodes || []
+          });
+        }
+      }
+      groupFunds.forEach((fund) => {
+        if (indexErrors.has(fund.code)) {
+          errors.push({ code: fund.code, source: "announcement-index", stage: "index", message: indexErrors.get(fund.code) });
+          return;
+        }
+        const matching = events.filter((event) => eventCoveredCodes(event).has(fund.code));
+        if (matching.some((event) => cachedEventIds.has(event.id)
+          || groupFunds.filter((item) => eventCoveredCodes(event).has(item.code)).length > 1)) {
+          resolvedBySharedNoticeOrCache.add(fund.code);
+        }
+        const latestMatchingDate = matching.map((event) => event.date).filter(Boolean).sort().reverse()[0] || null;
+        const blockingFailures = latestMatchingDate
+          ? noticeFailures.filter((failure) => (!failure.shareCodes.length || failure.shareCodes.includes(fund.code))
+            && (!failure.noticeDate || failure.noticeDate >= latestMatchingDate))
+          : noticeFailures.filter((failure) => !failure.shareCodes.length || failure.shareCodes.includes(fund.code));
+        if (blockingFailures.length) {
+          const failure = blockingFailures.sort((left, right) => String(right.noticeDate).localeCompare(String(left.noticeDate)))[0];
+          errors.push(Object.assign({ code: fund.code, source: "announcement-index" }, failure));
+        } else if (matching.length) {
+          byCode[fund.code] = matching;
+        }
+      });
+    } catch (error) {
+      groupFunds.forEach((fund) => errors.push({ code: fund.code, source: "announcement-index", stage: "index", message: error.message }));
+    }
+  });
+  return {
+    byCode,
+    errors,
+    checkedCodes: [...checkedCodes],
+    coverage: {
+      eligible: unique.length,
+      checked: checkedCodes.size,
+      found: Object.keys(byCode).length,
+      errors: errors.length
+    },
+    pdfEventCache,
+    diagnostics: {
+      sourceFailureCount: sourceFailures.size,
+      parseFailureCount: parseFailures.size,
+      unresolvedFundCount: new Set(errors.map((error) => error.code)).size,
+      resolvedBySharedNoticeOrCache: resolvedBySharedNoticeOrCache.size,
+      cacheHitNoticeCount: cachedEventIds.size,
+      downloadedNoticeCount
+    }
+  };
+}
+
+module.exports = {
+  ANNOUNCEMENT_API_URL,
+  buildAnnouncementApiUrl,
+  buildAnnouncementPdfUrl,
+  collectAnnouncementIndexNoticeEvents,
+  fetchAnnouncementText,
+  fetchFundNotices,
+  createTaskLimiter,
+  eventCoveredCodes,
+  parseAnnouncementIndex,
+  productKey,
+  repairAnnouncementDate
+};
