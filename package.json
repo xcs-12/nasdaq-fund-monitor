@@ -25,7 +25,7 @@
     "test": "node scripts/check-release.js"
   },
   "dependencies": {
-    "nodemailer": "10.1.7",
+    "nodemailer": "10.3.0",
     "pdfjs-dist": "4.8.69"
   }
 }
